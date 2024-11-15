@@ -8,20 +8,23 @@
 
 LOG_CATEGORY("machine.core");
 
-using namespace machine;
+using namespace machine; // 命名空间
 
+// 根据给定的xlen和isa_word生成需要检查的指令标志
 static InstructionFlags unsupported_inst_flags_to_check(Xlen xlen,
                             ConfigIsaWord isa_word) {
-    unsigned flags_to_check = IMF_SUPPORTED;
+    unsigned flags_to_check = IMF_SUPPORTED; // 初始化flags_to_check为IMF_SUPPORTED
     if (xlen == Xlen::_32)
-        flags_to_check |= IMF_RV64;
+        flags_to_check |= IMF_RV64; // 如果xlen是32位，则添加IMF_RV64标志
     if (!isa_word.contains('A'))
-        flags_to_check |= IMF_AMO;
+        flags_to_check |= IMF_AMO; // 如果isa_word不包含'A'，则添加IMF_AMO标志。
     if (!isa_word.contains('M'))
-        flags_to_check |= IMF_MUL;
+        flags_to_check |= IMF_MUL; // 如果isa_word不包含'M'，则添加IMF_MUL标志。
     return InstructionFlags(flags_to_check);
 }
 
+// Core类的构造函数
+// 根据传入的参数初始化Core对象的各个成员变量
 Core::Core(
     Registers *regs,
     BranchPredictor *predictor,
@@ -50,11 +53,12 @@ Core::Core(
     step_over_exception[EXCAUSE_INT] = false;
 }
 
+// 执行一个处理器周期的步骤
 void Core::step(bool skip_break) {
-    emit step_started();
-    state.cycle_count++;
-    do_step(skip_break);
-    emit step_done(state);
+    emit step_started(); //发出step_started信号
+    state.cycle_count++; //增加周期计数器
+    do_step(skip_break); // 执行实际的步骤
+    emit step_done(state); //传递当前状态
 }
 
 void Core::reset() {
@@ -278,6 +282,7 @@ enum ExceptionCause Core::memory_special(
     return EXCAUSE_NONE;
 }
 
+// 取值
 FetchState Core::fetch(PCInterstage pc, bool skip_break) {
     if (pc.stop_if) { return {}; }
 
@@ -306,6 +311,7 @@ FetchState Core::fetch(PCInterstage pc, bool skip_break) {
              } };
 }
 
+// 解码
 DecodeState Core::decode(const FetchInterstage &dt) {
     InstructionFlags flags;
     bool w_operation = this->xlen != Xlen::_64;
@@ -329,6 +335,14 @@ DecodeState Core::decode(const FetchInterstage &dt) {
     RegisterValue val_rt = regs->read_gp(num_rt);
     RegisterValue immediate_val = dt.inst.immediate();
     const bool regwrite = flags & IMF_REGWRITE;
+
+    // 检查是否为 RVV 指令
+    if (dt.inst.is_rvv()) {
+        // 设置 RVV 指令的相关 flag 和操作
+        flags |= IMF_RVV;
+        // 根据具体的 RVV 指令，设置 alu_op，mem_ctl 等
+        alu_op = determine_rvv_alu_op(dt.inst);
+    }
 
     CSR::Address csr_address = (flags & IMF_CSR) ? dt.inst.csr_address() : CSR::Address(0);
     RegisterValue csr_read_val
@@ -395,6 +409,7 @@ DecodeState Core::decode(const FetchInterstage &dt) {
                                 .insert_stall_before = bool(flags & IMF_CSR) } };
 }
 
+// 执行
 ExecuteState Core::execute(const DecodeInterstage &dt) {
     enum ExceptionCause excause = dt.excause;
     // TODO refactor to produce multiplexor index and multiplex function
@@ -411,6 +426,16 @@ ExecuteState Core::execute(const DecodeInterstage &dt) {
         if (excause != EXCAUSE_NONE) return RegisterValue(0);
         return alu_combined_operate(dt.aluop, dt.alu_component, dt.w_operation, dt.alu_mod, alu_fst, alu_sec);
     }();
+
+    // 如果是 RVV 指令，进行向量运算
+    if (dt.inst.is_rvv()) {
+        // 执行 RVV 指令的操作
+        alu_val = execute_rvv_instruction(dt.inst, alu_fst, alu_sec);
+    } else {
+        // 常规的标量 ALU 操作
+        alu_val = alu_combined_operate(dt.aluop, dt.alu_component, dt.w_operation, dt.alu_mod, alu_fst, alu_sec);
+    }
+
     const Address branch_jal_target = dt.inst_addr + dt.immediate_val.as_i64();
 
     const unsigned stall_status = [=] {
@@ -464,6 +489,7 @@ ExecuteState Core::execute(const DecodeInterstage &dt) {
              } };
 }
 
+// 访存
 MemoryState Core::memory(const ExecuteInterstage &dt) {
     RegisterValue towrite_val = dt.alu_val;
     auto mem_addr = Address(get_xlen_from_reg(dt.alu_val));
@@ -484,6 +510,12 @@ MemoryState Core::memory(const ExecuteInterstage &dt) {
             Q_ASSERT(dt.memctl == AC_NONE);
             // AC_NONE is memory NOP
         }
+    }
+
+            // 处理 RVV 指令的内存操作
+    if (dt.inst.is_rvv()) {
+        // 这里需要处理向量内存操作，比如加载和存储
+        towrite_val = process_rvv_memory(dt.inst, mem_addr, memread, memwrite);
     }
 
     if (dt.excause != EXCAUSE_NONE) {
@@ -573,8 +605,16 @@ MemoryState Core::memory(const ExecuteInterstage &dt) {
              } };
 }
 
+// 写回
 WritebackState Core::writeback(const MemoryInterstage &dt) {
     if (dt.regwrite) { regs->write_gp(dt.num_rd, dt.towrite_val); }
+    if (dt.inst.is_rvv()) {
+    // 处理 RVV 指令的写回操作
+    write_rvv_back(dt.num_rd, dt.towrite_val);
+    } else {
+        regs->write_gp(dt.num_rd, dt.towrite_val);
+    }
+    }
 
     return WritebackState { WritebackInternalState {
         .inst = (dt.excause == EXCAUSE_NONE)? dt.inst: Instruction::NOP,
