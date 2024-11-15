@@ -60,7 +60,19 @@ enum InstructionFlags : unsigned {
     // TODO do we want to add those signals to the visualization?
 
     IMF_RV64 = 1L << 24, /**< Mark instructions which are available in 64-bit mode only. */
+
+        // RVV Instructions - Add new flags for RVV operations
+    IMF_RVV = 1L << 25,         /**< RVV instruction */
+    IMF_VSETVL = 1L << 26,      /**< vsetvl instruction */
+    IMF_VADD_VV = 1L << 27,     /**< vadd.vv instruction */
+    IMF_VADD_VX = 1L << 28,     /**< vadd.vx instruction */
+    IMF_VADD_VI = 1L << 29,     /**< vadd.vi instruction */
+    IMF_VMUL_VV = 1L << 30,     /**< vmul.vv instruction */
+    IMF_VLW_V = 1L << 31,       /**< vlw.v instruction */
+    IMF_VSW_V = 1L << 32,       /**< vsw.v instruction */
 };
+};
+
 
 /**
  * Collection of data necessary to parse instruction from tokens.
@@ -112,7 +124,8 @@ public:
     static const Instruction NOP;
     static const Instruction UNKNOWN_INST;
 
-    enum Type { R, I, S, B, U, J, ZICSR, AMO, UNKNOWN };
+    // enum Type { R, I, S, B, U, J, ZICSR, AMO, UNKNOWN };
+    enum Type { R, I, S, B, U, J, ZICSR, AMO, V, UNKNOWN };
 
     /** Modified encoding to enable pseudoinstructions. */
     enum class Modifier {

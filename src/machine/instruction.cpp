@@ -24,6 +24,7 @@ using std::underlying_type;
 namespace machine {
 }
 
+// 定义了一个指令的参数（argument）的属性
 struct ArgumentDesc {
     char name;
     /**
@@ -58,6 +59,10 @@ struct ArgumentDesc {
     [[nodiscard]] constexpr bool is_imm() const { return kind != 'g'; }
 };
 
+
+// 通过字符代码来查找对应的 ArgumentDesc。数组的每个索引位置代表一个字母字符，通过字符代码访问时可以找到对应的 ArgumentDesc 对象。
+
+例如，如果你需要查找字符 'd' 对应的参数描述，可以通过 arg_desc_by_code['d'] 访问。
 static const ArgumentDesc arg_desc_list[] = {
     // Destination register (rd)
     ArgumentDesc('d', 'g', 0, 0x1f, { { { 5, 7 } }, 0 }),
@@ -87,8 +92,10 @@ static const ArgumentDesc arg_desc_list[] = {
     ArgumentDesc('E', 'E', 0, 0xfff, { { { 12, 20 } }, 0 }),
 };
 
+// 构建一个查找表（数组 arg_desc_by_code），将 arg_desc_list 中的每个 ArgumentDesc 实例与对应的字符（desc.name）关联起来
 static const ArgumentDesc *arg_desc_by_code[(int)('z' + 1)];
 
+// 该函数负责遍历 arg_desc_list 数组，并填充 arg_desc_by_code 数组。每个 ArgumentDesc 中的 name 字符（例如 'd', 's', 't' 等）会作为索引，将对应的 ArgumentDesc 指针存入 arg_desc_by_code 中。
 static bool fill_argdesbycode() {
     for (const auto &desc : arg_desc_list) {
         arg_desc_by_code[(uint)(unsigned char)desc.name] = &desc;
@@ -96,9 +103,15 @@ static bool fill_argdesbycode() {
     return true;
 }
 
+// 将其返回值（true）赋给 argdesbycode_filled 变量，表示 arg_desc_by_code 数组已经被正确填充。
 bool argdesbycode_filled = fill_argdesbycode();
 
+// 宏定义部分
+
+// ALU I 类型指令（通常用于立即数运算）的操作特性
 #define FLAGS_ALU_I (IMF_SUPPORTED | IMF_ALUSRC | IMF_REGWRITE | IMF_ALU_REQ_RS)
+
+// ALU I 类型指令的扩展标志
 #define FLAGS_ALU_I_LOAD                                                                           \
     (IMF_SUPPORTED | IMF_ALUSRC | IMF_REGWRITE | IMF_MEMREAD | IMF_MEM | IMF_ALU_REQ_RS)
 #define FLAGS_ALU_I_STORE                                                                          \
@@ -111,6 +124,15 @@ bool argdesbycode_filled = fill_argdesbycode();
 // forwarding is not possible from memory stage after memory read, TODO to solve better way
 #define FLAGS_AMO_STORE (FLAGS_ALU_I_STORE | FLAGS_ALU_T_R_D | IMF_AMO | IMF_MEMREAD)
 #define FLAGS_AMO_MODIFY (FLAGS_ALU_I_LOAD | FLAGS_AMO_STORE | IMF_AMO)
+
+// RVV宏
+#define FLAGS_RVV_VSETVL (IMF_SUPPORTED | IMF_REGWRITE | IMF_ALUSRC | IMF_RVV)
+#define FLAGS_RVV_VADD_VV (IMF_SUPPORTED | IMF_ALUSRC | IMF_REGWRITE | IMF_ALU_REQ_RS | IMF_ALU_REQ_RT | IMF_RVV)
+#define FLAGS_RVV_VADD_VX (IMF_SUPPORTED | IMF_ALUSRC | IMF_REGWRITE | IMF_ALU_REQ_RS | IMF_ALU_REQ_RT | IMF_RVV)
+#define FLAGS_RVV_VADD_VI (IMF_SUPPORTED | IMF_ALUSRC | IMF_REGWRITE | IMF_ALU_REQ_RS | IMF_RVV)
+#define FLAGS_RVV_VMUL_VV (IMF_SUPPORTED | IMF_ALUSRC | IMF_REGWRITE | IMF_ALU_REQ_RS | IMF_ALU_REQ_RT | IMF_RVV)
+#define FLAGS_RVV_VLW_V (IMF_SUPPORTED | IMF_ALUSRC | IMF_REGWRITE | IMF_MEMREAD | IMF_MEM | IMF_RVV)
+#define FLAGS_RVV_VSW_V (IMF_SUPPORTED | IMF_ALUSRC | IMF_MEMWRITE | IMF_MEM | IMF_RVV)
 
 #define NOALU                                                                                      \
     { .alu_op = AluOp::ADD }
@@ -146,6 +168,7 @@ struct InstructionMap {
 #define IT_J Instruction::J
 #define IT_AMO Instruction::AMO
 #define IT_ZICSR Instruction::ZICSR
+#define IT_V Instruction::V
 #define IT_UNKNOWN Instruction::UNKNOWN
 
 // clang-format off
@@ -264,16 +287,20 @@ static const struct InstructionMap inst_aliases_csrrs[] = {
 
 // RV32/64A - Atomi Memory Operations
 
-#define AMO_ARGS_LOAD {"d", "(s)"}
-#define AMO_ARGS_STORE {"d", "t", "(s)"}
-#define AMO_ARGS_MODIFY {"d", "t", "(s)"}
+#define AMO_ARGS_LOAD {"d", "(s)"} // 加载操作,表示将值从地址 (s) 加载到寄存器 d
+#define AMO_ARGS_STORE {"d", "t", "(s)"} // 表示将寄存器 t 的值存储到地址 (s)，并将 d 用作目标寄存器（通常用于返回值或操作的结果）
+#define AMO_ARGS_MODIFY {"d", "t", "(s)"} //修改操作，类似于存储操作，但通常用于一些修改（比如增量、比较等）。
 
+// AMO 原子操作指令构建宏
+// 四个变种指令
+// 它的作用是根据 NAME_BASE 和 CODE_BASE 创建一个基础指令，接着生成三个附加变种（.rl、.aq、.aqrl），并且修改 CODE_BASE 中的特定位来生成不同的指令操作码。
 #define AMO_MAP_4ITEMS(NAME_BASE, CODE_BASE, MASK, MEM_CTL, FLAGS, ARGS) \
     { NAME_BASE, IT_AMO, NOALU, MEM_CTL, nullptr, ARGS , ((CODE_BASE) | 0x00000000), 0xfe00707f, { .flags = FLAGS}, nullptr}, \
     { NAME_BASE ".rl", IT_AMO, NOALU, MEM_CTL, nullptr, ARGS , ((CODE_BASE) | 0x02000000), 0xfe00707f, { .flags = FLAGS}, nullptr}, \
     { NAME_BASE ".aq", IT_AMO, NOALU, MEM_CTL, nullptr, ARGS , ((CODE_BASE) | 0x04000000), 0xfe00707f, { .flags = FLAGS}, nullptr}, \
     { NAME_BASE ".aqrl", IT_AMO, NOALU, MEM_CTL, nullptr, ARGS , ((CODE_BASE) | 0x06000000), 0xfe00707f, { .flags = FLAGS}, nullptr}
 
+// 32 位 AMO 指令的实例
 static const struct InstructionMap AMO_32_map[] = {
     AMO_MAP_4ITEMS("amoadd.w", 0x0000202f, 0xfe00707f, AC_AMOADD32, FLAGS_AMO_MODIFY, AMO_ARGS_MODIFY),
     AMO_MAP_4ITEMS("amoswap.w", 0x0800202f, 0xfe00707f, AC_AMOSWAP32, FLAGS_AMO_MODIFY, AMO_ARGS_MODIFY),
@@ -309,6 +336,7 @@ static const struct InstructionMap AMO_32_map[] = {
     IM_UNKNOWN, IM_UNKNOWN, IM_UNKNOWN, IM_UNKNOWN,
 };
 
+// 64 位 AMO 指令
 static const struct InstructionMap AMO_64_map[] = {
     AMO_MAP_4ITEMS("amoadd.d", 0x0000302f, 0xfe00707f, AC_AMOADD64, FLAGS_AMO_MODIFY, AMO_ARGS_MODIFY),
     AMO_MAP_4ITEMS("amoswap.d", 0x0800302f, 0xfe00707f, AC_AMOSWAP64, FLAGS_AMO_MODIFY, AMO_ARGS_MODIFY),
@@ -344,6 +372,7 @@ static const struct InstructionMap AMO_64_map[] = {
     IM_UNKNOWN, IM_UNKNOWN, IM_UNKNOWN, IM_UNKNOWN,
 };
 
+// 包含 AMO 指令映射的数组。这个数组包含了 32 位和 64 位 AMO 指令的整体映射。
 static const struct InstructionMap AMO_map[] = {
     IM_UNKNOWN,
     IM_UNKNOWN,
@@ -638,6 +667,44 @@ static inline const struct InstructionMap &InstructionMapFind(uint32_t code) {
     if ((code ^ im->code) & im->mask) { return C_inst_unknown; }
     return *im;
 }
+
+// RVV
+//设置向量长度寄存器 vl 为 rs1 的值，并将 rd 设置为 rs1，同时设置存储向量类型的寄存器为 rs2（值可以是 8、16 或 32）
+static const struct InstructionMap inst_vsetvl[] = {
+    {"vsetvl", IT_V, { .alu_op = AluOp::SET_VL }, NOMEM, nullptr, {"rd", "rs1", "rs2"}, 0x0000000F, 0x0000707F, { .flags = IMF_SUPPORTED | IMF_VL_REQ }, inst_aliases_vsetvl}, // vsetvl
+    INST_ALIAS_LIST_END,
+};
+// 两个向量 vs2 和 vs1 相加，结果存储到 vd
+static const struct InstructionMap inst_vadd_vv[] = {
+    {"vadd.vv", IT_V, { .alu_op = AluOp::ADD }, NOMEM, nullptr, {"vd", "vs2", "vs1"}, 0x00000033, 0x0000707F, { .flags = IMF_SUPPORTED | IMF_VECTOR_OP }, inst_aliases_vadd_vv}, // vadd.vv
+    INST_ALIAS_LIST_END,
+};
+// 向量 vs2 的每个元素加上标量 rs1，并存储结果到 vd。
+static const struct InstructionMap inst_vadd_vx[] = {
+    {"vadd.vx", IT_V, { .alu_op = AluOp::ADD }, NOMEM, nullptr, {"vd", "vs2", "rs1"}, 0x00000133, 0x0000707F, { .flags = IMF_SUPPORTED | IMF_VECTOR_OP }, inst_aliases_vadd_vx}, // vadd.vx
+    INST_ALIAS_LIST_END,
+};
+// 向量 vs2 的每个元素加上标量常数 imm，并存储结果到 vd
+static const struct InstructionMap inst_vadd_vi[] = {
+    {"vadd.vi", IT_V, { .alu_op = AluOp::ADD }, NOMEM, nullptr, {"vd", "vs2", "imm"}, 0x00000233, 0x0000707F, { .flags = IMF_SUPPORTED | IMF_VECTOR_OP }, inst_aliases_vadd_vi}, // vadd.vi
+    INST_ALIAS_LIST_END,
+};
+//  对两个向量 vs2 和 vs1 进行点积运算，结果存储到 vd
+static const struct InstructionMap inst_vmul_vv[] = {
+    {"vmul.vv", IT_V, { .alu_op = AluOp::MUL }, NOMEM, nullptr, {"vd", "vs2", "vs1"}, 0x00000433, 0x0000707F, { .flags = IMF_SUPPORTED | IMF_VECTOR_OP }, inst_aliases_vmul_vv}, // vmul.vv
+    INST_ALIAS_LIST_END,
+};
+// 从内存中加载元素到向量 vd，加载的长度取决于 vl 和之前设置的单位长度。
+static const struct InstructionMap inst_vlw_v[] = {
+    {"vlw.v", IT_V, { .alu_op = AluOp::LOAD }, NOMEM, nullptr, {"vd", "rs1"}, 0x00000833, 0x0000707F, { .flags = IMF_SUPPORTED | IMF_VECTOR_LOAD }, inst_aliases_vlw_v}, // vlw.v
+    INST_ALIAS_LIST_END,
+};
+// 将向量 vs3 的元素存储到内存中，从地址 rs1 开始，存储的长度取决于 vl 和之前设置的单位长度。
+static const struct InstructionMap inst_vsw_v[] = {
+    {"vsw.v", IT_V, { .alu_op = AluOp::STORE }, NOMEM, nullptr, {"vs3", "rs1"}, 0x00000C33, 0x0000707F, { .flags = IMF_SUPPORTED | IMF_VECTOR_STORE }, inst_aliases_vsw_v}, // vsw.v
+    INST_ALIAS_LIST_END,
+};
+
 
 const std::array<const QString, 36> RECOGNIZED_PSEUDOINSTRUCTIONS { "nop",    "la",     "li",
                                                                     "sext.b", "sext.h", "zext.h",
@@ -1009,30 +1076,113 @@ static void reloc_append(
     if (chars_taken != nullptr) { *chars_taken = chars_taken_; }
 }
 
+// size_t Instruction::code_from_tokens(
+//     uint32_t *code,
+//     size_t buffsize,
+//     TokenizedInstruction &inst,
+//     RelocExpressionList *reloc,
+//     bool pseudoinst_enabled) {
+//     if (str_to_instruction_code_map.isEmpty()) { instruction_from_string_build_base(); }
+
+//     Instruction result = base_from_tokens(inst, reloc);
+//     if (result.data() != 0) {
+//         if (result.size() > buffsize) {
+//             // NOTE: this is bug, not user error.
+//             throw ParseError("insufficient buffer size to write parsed instruction");
+//         }
+//         *code = result.data();
+//         return result.size();
+//     }
+
+//     if (pseudoinst_enabled) {
+//         size_t pseudo_result = pseudo_from_tokens(code, buffsize, inst, reloc);
+//         if (pseudo_result != 0) { return pseudo_result; }
+//     }
+//     throw ParseError("unknown instruction");
+// }
+
 size_t Instruction::code_from_tokens(
     uint32_t *code,
     size_t buffsize,
     TokenizedInstruction &inst,
     RelocExpressionList *reloc,
-    bool pseudoinst_enabled) {
-    if (str_to_instruction_code_map.isEmpty()) { instruction_from_string_build_base(); }
+    bool pseudoinst_enabled) 
+{
+    // 检查指令映射是否为空，如果为空则初始化
+    if (str_to_instruction_code_map.isEmpty()) { 
+        instruction_from_string_build_base(); 
+    }
 
+    // 首先尝试通过已有的解析方法解析指令
     Instruction result = base_from_tokens(inst, reloc);
+
+    // 如果成功解析出指令，直接返回
     if (result.data() != 0) {
         if (result.size() > buffsize) {
-            // NOTE: this is bug, not user error.
+            // 如果缓冲区不足以存储指令，抛出异常
             throw ParseError("insufficient buffer size to write parsed instruction");
         }
         *code = result.data();
         return result.size();
     }
 
+    // 如果是伪指令，并且解析成功
     if (pseudoinst_enabled) {
         size_t pseudo_result = pseudo_from_tokens(code, buffsize, inst, reloc);
-        if (pseudo_result != 0) { return pseudo_result; }
+        if (pseudo_result != 0) { 
+            return pseudo_result; 
+        }
     }
-    throw ParseError("unknown instruction");
+
+    // 处理 RVV 指令
+    if (inst.opcode == "vsetvl") {
+        // 解析 vsetvl 指令
+        uint8_t rd = parse_field(inst.rd);
+        uint8_t rs1 = parse_field(inst.rs1);
+        uint8_t rs2 = parse_field(inst.rs2);
+        *code = encode_vsetvl(rd, rs1, rs2);
+    } else if (inst.opcode == "vadd.vv") {
+        // 解析 vadd.vv 指令
+        uint8_t vd = parse_field(inst.vd);
+        uint8_t vs2 = parse_field(inst.vs2);
+        uint8_t vs1 = parse_field(inst.vs1);
+        *code = encode_vadd_vv(vd, vs2, vs1);
+    } else if (inst.opcode == "vadd.vx") {
+        // 解析 vadd.vx 指令
+        uint8_t vd = parse_field(inst.vd);
+        uint8_t vs2 = parse_field(inst.vs2);
+        uint8_t rs1 = parse_field(inst.rs1);
+        *code = encode_vadd_vx(vd, vs2, rs1);
+    } else if (inst.opcode == "vadd.vi") {
+        // 解析 vadd.vi 指令
+        uint8_t vd = parse_field(inst.vd);
+        uint8_t vs2 = parse_field(inst.vs2);
+        int32_t imm = parse_immediate(inst.imm);
+        *code = encode_vadd_vi(vd, vs2, imm);
+    } else if (inst.opcode == "vmul.vv") {
+        // 解析 vmul.vv 指令
+        uint8_t vd = parse_field(inst.vd);
+        uint8_t vs2 = parse_field(inst.vs2);
+        uint8_t vs1 = parse_field(inst.vs1);
+        *code = encode_vmul_vv(vd, vs2, vs1);
+    } else if (inst.opcode == "vlw.v") {
+        // 解析 vlw.v 指令
+        uint8_t vd = parse_field(inst.vd);
+        uint8_t rs1 = parse_field(inst.rs1);
+        *code = encode_vlw_v(vd, rs1);
+    } else if (inst.opcode == "vsw.v") {
+        // 解析 vsw.v 指令
+        uint8_t vs3 = parse_field(inst.vs3);
+        uint8_t rs1 = parse_field(inst.rs1);
+        *code = encode_vsw_v(vs3, rs1);
+    } else {
+        // 如果无法解析，抛出异常
+        throw ParseError("unknown instruction");
+    }
+
+    return sizeof(uint32_t);  // 返回指令的字节数
 }
+
 size_t Instruction::pseudo_from_tokens(
     uint32_t *code,
     size_t buffsize,
@@ -1462,6 +1612,19 @@ void Instruction::append_recognized_registers(QStringList &list) {
 uint8_t Instruction::size() const {
     return 4;
 }
+// size_t Instruction::code_from_string(
+//     uint32_t *code,
+//     size_t buffsize,
+//     QString str,
+//     Address inst_addr,
+//     RelocExpressionList *reloc,
+//     const QString &filename,
+//     unsigned line,
+//     bool pseudoinst_enabled) {
+//     auto inst = TokenizedInstruction::from_line(std::move(str), inst_addr, filename, line);
+//     return Instruction::code_from_tokens(code, buffsize, inst, reloc, pseudoinst_enabled);
+// }
+
 size_t Instruction::code_from_string(
     uint32_t *code,
     size_t buffsize,
@@ -1470,10 +1633,15 @@ size_t Instruction::code_from_string(
     RelocExpressionList *reloc,
     const QString &filename,
     unsigned line,
-    bool pseudoinst_enabled) {
+    bool pseudoinst_enabled) 
+{
+    // 通过 TokenizedInstruction 解析指令
     auto inst = TokenizedInstruction::from_line(std::move(str), inst_addr, filename, line);
+    
+    // 调用 code_from_tokens 处理指令解析
     return Instruction::code_from_tokens(code, buffsize, inst, reloc, pseudoinst_enabled);
 }
+
 
 Instruction::ParseError::ParseError(QString message) : message(std::move(message)) {}
 
